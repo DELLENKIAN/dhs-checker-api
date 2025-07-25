@@ -5,7 +5,6 @@ from playwright.sync_api import sync_playwright
 import csv
 import os
 import time
-import uuid
 
 app = FastAPI()
 
@@ -14,7 +13,6 @@ PASSWORD = "Odinson1203"
 
 def check_multiple_ids(id_list):
     results = []
-
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context()
@@ -33,36 +31,26 @@ def check_multiple_ids(id_list):
         for id_number in id_list:
             status = "NO DHS"
             dc_name = "NO DHS"
-
             try:
                 page.fill("#cp_pagedata_f_RSAIDPass", id_number)
                 time.sleep(1)
                 page.click("#cp_pagedata_lb_ApplyDataFilter")
-
                 row_selector = f"tr:has(td:text('{id_number}'))"
-
-                try:
-                    page.wait_for_selector(row_selector, timeout=6000)
-                    status_selector = f"{row_selector} >> td:nth-child(6) >> div >> span"
-                    status = page.locator(status_selector).inner_text().strip()
-
-                    modal_trigger_selector = f"{row_selector} >> td:nth-child(8) >> div"
-                    page.click(modal_trigger_selector)
-                    page.wait_for_selector("iframe#IframePage", timeout=10000)
-                    iframe = page.frame(name="IframePage")
-                    if not iframe:
-                        iframe = next(f for f in page.frames if "dhs_ViewDCDetails.aspx" in f.url)
-                    iframe.wait_for_selector("#f_TradingName", timeout=10000)
-                    dc_name = iframe.locator("#f_TradingName").inner_text().strip()
-                    page.click("#cp_pagedata_btnHide")
-                    time.sleep(1)
-
-                except:
-                    pass
-
+                page.wait_for_selector(row_selector, timeout=6000)
+                status_selector = f"{row_selector} >> td:nth-child(6) >> div >> span"
+                status = page.locator(status_selector).inner_text().strip()
+                modal_trigger_selector = f"{row_selector} >> td:nth-child(8) >> div"
+                page.click(modal_trigger_selector)
+                page.wait_for_selector("iframe#IframePage", timeout=10000)
+                iframe = page.frame(name="IframePage")
+                if not iframe:
+                    iframe = next(f for f in page.frames if "dhs_ViewDCDetails.aspx" in f.url)
+                iframe.wait_for_selector("#f_TradingName", timeout=10000)
+                dc_name = iframe.locator("#f_TradingName").inner_text().strip()
+                page.click("#cp_pagedata_btnHide")
+                time.sleep(1)
             except:
                 pass
-
             results.append({"id_number": id_number, "status": status, "debt_counsellor": dc_name})
 
         browser.close()
