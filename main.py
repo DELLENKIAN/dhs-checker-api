@@ -20,6 +20,8 @@ from __future__ import annotations
 import csv
 import io
 from typing import List, Dict, Optional
+from pydantic import BaseModel
+
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import JSONResponse
@@ -91,3 +93,20 @@ async def check_ids(file: UploadFile = File(...)) -> List[Dict[str, Optional[str
     # will propagate and return a 500 error to the client.
     results = await dhs_checker.check_ids(id_numbers)
     return results
+
+
+class IDRequest(BaseModel):
+    id_number: str
+
+@app.post("/check_id/", response_class=JSONResponse)
+async def check_id(id_request: IDRequest):
+    """
+    Accept a single ID number and return debt review information for that ID.
+    """
+    try:
+        results = await dhs_checker.check_ids([id_request.id_number])
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    if not results:
+        raise HTTPException(status_code=404, detail="ID not found")
+    return results[0]
