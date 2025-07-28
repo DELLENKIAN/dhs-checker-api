@@ -1,4 +1,5 @@
 """
+
 FastAPI application for the DHS Checker API.
 
 This application exposes a single endpoint ``/check_ids/`` that accepts a
@@ -105,6 +106,20 @@ async def check_id(id_request: IDRequest):
     """
     try:
         results = await dhs_checker.check_ids([id_request.id_number])
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    if not results:
+        raise HTTPException(status_code=404, detail="ID not found")
+    return results[0]
+
+
+@app.get("/check_id_get/", response_class=JSONResponse)
+async def check_id_get(id_number: str):
+    """
+    Accept a single ID number via a query parameter and return debt review information for that ID as JSON.
+    """
+    try:
+        results = await dhs_checker.check_ids([id_number])
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
     if not results:
