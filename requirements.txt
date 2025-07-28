@@ -2,3 +2,5 @@ fastapi
 uvicorn
 playwright==1.42.0
 pandas
+
+python-multipart
