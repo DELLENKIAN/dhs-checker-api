@@ -1,67 +1,93 @@
+"""
+FastAPI application for the DHS Checker API.
 
-from fastapi import FastAPI, UploadFile, File
-from fastapi.responses import JSONResponse
-from playwright.sync_api import sync_playwright
+This application exposes a single endpoint ``/check_ids/`` that accepts a
+CSV file containing a column named ``ID Number``.  The endpoint
+processes the CSV, extracts each RSA ID number, invokes the scraping
+logic contained in ``dhs_checker.py`` to fetch the debt review status
+and debt counsellor trading name from the NCR Debt Help System and
+returns the results as JSON.
+
+The application uses Playwright under the hood to automate a headless
+browser session.  Playwright is installed at runtime using a
+post-install script defined in ``railway.json``.  Ensure that the
+environment variables ``DHS_USERNAME`` and ``DHS_PASSWORD`` are set
+when running this application so that the scraper can authenticate.
+"""
+
+from __future__ import annotations
+
 import csv
-import os
-import time
+import io
+from typing import List, Dict, Optional
 
-app = FastAPI()
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.responses import JSONResponse
 
-USERNAME = "NCRDC4429"
-PASSWORD = "Odinson1203"
+import dhs_checker
 
-def check_multiple_ids(id_list):
-    results = []
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context()
-        page = context.new_page()
 
-        page.goto("https://www.ncrdebthelp.co.za/")
-        page.click("text='System LogIn'")
-        page.fill("#cp_pagedata_f_login_username", USERNAME)
-        page.fill("#cp_pagedata_f_login_password", PASSWORD)
-        page.click("text='Proceed | LogIn'")
-        page.wait_for_selector("a[href*='dhs_ManageRequestTransfers.aspx']", timeout=15000)
-        page.click("a[href*='dhs_ManageRequestTransfers.aspx']")
-        page.wait_for_selector("#cp_pagedata_lb_NewData", timeout=15000)
-        page.click("#cp_pagedata_lb_NewData")
+app = FastAPI(title="DHS Checker API", version="1.0.0")
 
-        for id_number in id_list:
-            status = "NO DHS"
-            dc_name = "NO DHS"
-            try:
-                page.fill("#cp_pagedata_f_RSAIDPass", id_number)
-                time.sleep(1)
-                page.click("#cp_pagedata_lb_ApplyDataFilter")
-                row_selector = f"tr:has(td:text('{id_number}'))"
-                page.wait_for_selector(row_selector, timeout=6000)
-                status_selector = f"{row_selector} >> td:nth-child(6) >> div >> span"
-                status = page.locator(status_selector).inner_text().strip()
-                modal_trigger_selector = f"{row_selector} >> td:nth-child(8) >> div"
-                page.click(modal_trigger_selector)
-                page.wait_for_selector("iframe#IframePage", timeout=10000)
-                iframe = page.frame(name="IframePage")
-                if not iframe:
-                    iframe = next(f for f in page.frames if "dhs_ViewDCDetails.aspx" in f.url)
-                iframe.wait_for_selector("#f_TradingName", timeout=10000)
-                dc_name = iframe.locator("#f_TradingName").inner_text().strip()
-                page.click("#cp_pagedata_btnHide")
-                time.sleep(1)
-            except:
-                pass
-            results.append({"id_number": id_number, "status": status, "debt_counsellor": dc_name})
 
-        browser.close()
+@app.post("/check_ids/", response_class=JSONResponse)
+async def check_ids(file: UploadFile = File(...)) -> List[Dict[str, Optional[str]]]:
+    """Accept a CSV file and return debt review information for each ID.
+
+    The uploaded CSV must contain a header named ``ID Number``.  Each
+    row in this column should contain a valid South African ID number
+    (13-digit string).  The endpoint reads the CSV in memory, extracts
+    the values from the ``ID Number`` column and passes them to the
+    ``dhs_checker.check_ids`` coroutine.  The resulting list of
+    dictionaries is returned to the caller as JSON.
+
+    :param file: The uploaded CSV file containing ID numbers.
+    :returns: A list of dictionaries with keys ``id_number``,
+              ``status`` and ``debt_counsellor``.
+    :raises HTTPException: If the CSV is malformed or missing the
+                           required column.
+    """
+    # Read the uploaded file into memory.  FastAPI's UploadFile
+    # provides an async interface but reading small files synchronously
+    # into a bytes buffer is acceptable here.  We decode using
+    # universal newline support to handle different OS line endings.
+    try:
+        contents = await file.read()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Failed to read uploaded file: {exc}")
+
+    # Use csv.DictReader to parse the CSV contents.  We assume UTF-8
+    # encoding.  If the file uses a different encoding you may need to
+    # adjust the decode call accordingly.
+    try:
+        csv_text = contents.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(status_code=400, detail=f"Unable to decode CSV file as UTF-8: {exc}")
+
+    reader = csv.DictReader(io.StringIO(csv_text))
+    if reader.fieldnames is None:
+        raise HTTPException(status_code=400, detail="CSV file appears to be empty or missing a header row.")
+
+    # Normalize field names by stripping whitespace and case to allow
+    # variations such as "id number" or "ID number".  We create a
+    # mapping from normalized names to original names for extraction.
+    normalized_fields = {name.strip().lower(): name for name in reader.fieldnames}
+    id_column_name = normalized_fields.get("id number")
+    if not id_column_name:
+        raise HTTPException(status_code=400, detail="CSV file must contain a column named 'ID Number'.")
+
+    # Extract ID numbers from each row.  Skip rows where the ID value
+    # is missing or empty.
+    id_numbers: List[str] = []
+    for row in reader:
+        value = row.get(id_column_name)
+        if value:
+            id_numbers.append(value.strip())
+
+    if not id_numbers:
+        raise HTTPException(status_code=400, detail="No ID numbers found in the CSV file.")
+
+    # Delegate to the scraper.  If the scraper raises an exception it
+    # will propagate and return a 500 error to the client.
+    results = await dhs_checker.check_ids(id_numbers)
     return results
-
-@app.post("/check_ids/")
-async def upload_file(file: UploadFile = File(...)):
-    contents = await file.read()
-    decoded = contents.decode("utf-8").splitlines()
-    reader = csv.reader(decoded)
-    next(reader, None)  # skip header
-    id_list = [row[0].strip() for row in reader if row and row[0].strip()]
-    result = check_multiple_ids(id_list)
-    return JSONResponse(content={"results": result})
