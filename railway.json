@@ -1,0 +1,3 @@
+{
+  "postinstall": "playwright install chromium"
+}
